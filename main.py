@@ -3,8 +3,12 @@
 
 Strategy (all decisions on 1-minute closes of CBBTC, long only, full size,
 one position at a time; arms checked in priority order when flat):
-  ARM D — deep washout (the money arm): buy when the close is more than
-    2.2% below its 120-bar simple average, with NO turn confirmation.
+  ARM D — deep washout (the money arm): buy when the close is 1.8%
+    below its 90-bar simple average OR 2.2% below its 120-bar average,
+    AND at least 3% below the close 90 bars ago (ret90 gate), with NO
+    turn confirmation. The return gate blocks too-early entries when a
+    looser deviation threshold is used: it lifts the D_PCT x0.8
+    perturbation from +$31.39 to +$58.64 while the base stays +$67.73.
     The confirmation round 1 used (close above the close 12 bars ago)
     kills this trade entirely: by the time price turns up it is already
     back inside the band, so the entry only exists while price is still
@@ -53,9 +57,13 @@ PROTOCOL = "agent-fun/bars-replay/v1"
 MAX_SLIPPAGE_BPS = 100
 
 # Parameters (see module docstring for why each is what it is).
-# Arm D — deep washout.
-D_N = 120           # dip reference: simple average of this many closes
-D_PCT = 0.022       # close must be 2.2% below that average (no turn check)
+# Arm D — deep washout. The trigger is an OR of two deviations, gated
+# by a 90-bar return: fire when the close is 1.8% below its 90-bar
+# average OR 2.2% below its 120-bar average, AND at least 3% below
+# the close 90 bars ago. The return gate blocks too-early entries
+# when a looser threshold is used (D_PCT x0.8: +$31.39 -> +$58.64).
+D_PAIRS = ((90, 0.018), (120, 0.022))  # (average length, deviation)
+D_RET = 0.03        # 90-bar return must be at most -3% (ret90 gate)
 D_TP = 0.045        # take profit: sell at +4.5% over cost
 D_SL = 0.015        # stop loss: sell at -1.5% under cost (live insurance)
 D_HOLD = 120        # fallback: sell this many bars after entry
@@ -134,10 +142,15 @@ def on_batch(state, batch):
     c = closes[-1]
     bar_i = len(closes) - 1
     arm = None
-    if len(closes) > D_N:
-        avg = sum(closes[-D_N:]) / D_N
-        if c < avg * (1 - D_PCT):
-            arm = "D"
+    if len(closes) > 90:
+        ret90 = c / closes[-91] - 1
+        if ret90 <= -D_RET:
+            for (n, pct) in D_PAIRS:
+                if len(closes) > n:
+                    avg = sum(closes[-n:]) / n
+                    if c < avg * (1 - pct):
+                        arm = "D"
+                        break
     if arm is None and bar_i <= M_MAXBAR:
         if len(closes) > M_N and len(closes) > M_TURN:
             avg = sum(closes[-M_N:]) / M_N
